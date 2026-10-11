@@ -1,0 +1,6 @@
+{
+  "name": "TutorLink",
+  "description": "A peer-to-peer tutoring marketplace mobile app connecting students, peer tutors, and parents with verified credentials and seamless booking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

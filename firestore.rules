@@ -1,0 +1,133 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidRole(role) {
+      return role in ['tutee', 'tutor', 'parent'];
+    }
+
+    // Validation for User documents
+    function isValidUser(data, userId) {
+      return data.uid == userId
+        && data.roles is list
+        && data.roles.size() >= 1
+        && data.roles.size() <= 3
+        && data.activeRole is string
+        && data.activeRole in data.roles
+        && isValidRole(data.activeRole);
+    }
+
+    // 1. Users collection
+    // Users can read and write ONLY their own user document
+    // Validate that activeRole is always contained in roles
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming(), userId);
+      allow update: if isOwner(userId) && isValidUser(incoming(), userId);
+      allow delete: if isOwner(userId);
+    }
+
+    // 2. Tutor Profiles collection
+    // Publicly readable so students can search peer tutors
+    // Users can only write their own tutor profile
+    // Users CANNOT set verified to true (only false at creation, or keep existing verified state)
+    match /tutorProfiles/{tutorId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(tutorId)
+        && incoming().uid == tutorId
+        && incoming().verified == false; // Users can NEVER set verified to true
+      allow update: if isOwner(tutorId)
+        && incoming().uid == tutorId
+        && (incoming().verified == existing().verified || incoming().verified == false); // Cannot escalate verified
+      allow delete: if isOwner(tutorId);
+    }
+
+    // 3. Bookings collection
+    // Tutee or tutor involved can read and manage bookings
+    // Integrity rule: users cannot book themselves (tuteeUid != tutorUid)
+    match /bookings/{bookingId} {
+      allow read: if isSignedIn() && (
+        resource.data.tuteeUid == request.auth.uid ||
+        resource.data.tutorUid == request.auth.uid
+      );
+      allow create: if isSignedIn()
+        && incoming().tuteeUid == request.auth.uid
+        && incoming().tuteeUid != incoming().tutorUid; // Self-booking blocked
+      allow update: if isSignedIn() && (
+        resource.data.tuteeUid == request.auth.uid ||
+        resource.data.tutorUid == request.auth.uid
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.tuteeUid == request.auth.uid ||
+        resource.data.tutorUid == request.auth.uid
+      );
+    }
+
+    // 4. Availability slots
+    match /availability/{slotId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn() && (
+        (request.resource != null && incoming().tutorUid == request.auth.uid) ||
+        (resource != null && existing().tutorUid == request.auth.uid)
+      );
+    }
+
+    // 5. Reviews
+    // Integrity rule: cannot review yourself (tuteeUid != tutorUid)
+    match /reviews/{reviewId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && incoming().tuteeUid == request.auth.uid
+        && incoming().tuteeUid != incoming().tutorUid; // Self-review blocked
+      allow update, delete: if isSignedIn() && resource.data.tuteeUid == request.auth.uid;
+    }
+
+    // 6. Reports & moderation
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && incoming().reportedBy == request.auth.uid;
+      allow read: if isSignedIn() && resource.data.reportedBy == request.auth.uid;
+    }
+
+    // 7. Saved/favorite tutors
+    match /savedTutors/{savedId} {
+      allow read: if isSignedIn() && resource.data.tuteeUid == request.auth.uid;
+      allow create, update: if isSignedIn() && incoming().tuteeUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.tuteeUid == request.auth.uid;
+    }
+
+    // 8. Notifications
+    // Recipients can read and update (mark read) their own notifications
+    // Senders can create notifications directed to a recipient
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (
+        resource.data.recipientUid == request.auth.uid ||
+        resource.data.senderUid == request.auth.uid
+      );
+      allow create: if isSignedIn() && incoming().senderUid == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+    }
+  }
+}

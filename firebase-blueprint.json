@@ -1,0 +1,184 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with multi-role assignment (tutee, tutor, or parent) and personal details",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique auth UID" },
+        "name": { "type": "string", "description": "Full name of the user", "maxLength": 100 },
+        "email": { "type": "string", "description": "Email address of the user", "format": "email" },
+        "roles": { "type": "array", "description": "List of active enabled roles (tutee, tutor, parent)" },
+        "activeRole": { "type": "string", "enum": ["tutee", "tutor", "parent"], "description": "Current active persona" },
+        "bio": { "type": "string", "description": "Personal biography or description", "maxLength": 1000 },
+        "phone": { "type": "string", "description": "Contact phone number", "maxLength": 30 },
+        "university": { "type": "string", "description": "University or school name", "maxLength": 150 },
+        "degree": { "type": "string", "description": "Degree, stream, or major", "maxLength": 150 },
+        "yearOfStudy": { "type": "string", "description": "Year of study or grade", "maxLength": 50 },
+        "avatarInitials": { "type": "string", "description": "1-2 uppercase letters", "maxLength": 4 },
+        "avatarUrl": { "type": "string", "description": "Optional profile picture URL" },
+        "linkedChildUid": { "type": "string", "description": "Optional child UID linked to parent account" },
+        "linkedChildName": { "type": "string", "description": "Optional child name linked to parent account" },
+        "createdAt": { "type": "string", "description": "ISO timestamp or server timestamp" }
+      },
+      "required": ["uid", "name", "email", "roles", "activeRole"]
+    },
+    "TutorProfile": {
+      "title": "TutorProfile",
+      "description": "Extended tutor profile with subjects, credentials, and verification status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Tutor UID matching user document" },
+        "name": { "type": "string", "description": "Full name of tutor" },
+        "headline": { "type": "string", "description": "Short headline like Combined Maths mentor" },
+        "bio": { "type": "string", "description": "About me description", "maxLength": 1000 },
+        "subjects": { "type": "array", "description": "List of subjects taught" },
+        "hourlyRate": { "type": "number", "description": "Rate per hour in USD" },
+        "qualifications": { "type": "string", "description": "Academic background" },
+        "experience": { "type": "string", "description": "Teaching experience" },
+        "rating": { "type": "number", "description": "Average rating between 1 and 5" },
+        "reviewCount": { "type": "number", "description": "Total number of reviews" },
+        "completedSessions": { "type": "number", "description": "Total sessions completed" },
+        "verified": { "type": "boolean", "description": "Whether tutor is verified (cannot be set by user)" },
+        "responseTime": { "type": "string", "description": "Typical response time (e.g. 12 min)" },
+        "tags": { "type": "array", "description": "Tags like Visual learner, Patient, Exam prep" }
+      },
+      "required": ["uid", "name", "subjects", "qualifications", "experience", "verified"]
+    },
+    "AvailabilitySlot": {
+      "title": "AvailabilitySlot",
+      "description": "Weekly recurring or specific day availability for a tutor",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique slot identifier" },
+        "tutorUid": { "type": "string", "description": "UID of the tutor" },
+        "day": { "type": "string", "description": "Day of week or specific date" },
+        "start": { "type": "string", "description": "Start time string e.g. 09:00 AM" },
+        "end": { "type": "string", "description": "End time string e.g. 11:30 AM" },
+        "enabled": { "type": "boolean", "description": "Whether this window is open for booking" }
+      },
+      "required": ["id", "tutorUid", "day", "start", "end", "enabled"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "A scheduled or requested tutoring session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Booking unique ID" },
+        "tuteeUid": { "type": "string", "description": "Student booking the session" },
+        "tuteeName": { "type": "string", "description": "Student display name" },
+        "tutorUid": { "type": "string", "description": "Tutor conducting the session" },
+        "tutorName": { "type": "string", "description": "Tutor display name" },
+        "subject": { "type": "string", "description": "Subject topic for the session" },
+        "notes": { "type": "string", "description": "Session goal or description" },
+        "date": { "type": "string", "description": "Date formatted e.g. 2026-03-24" },
+        "time": { "type": "string", "description": "Time formatted e.g. 5:30 PM" },
+        "durationMins": { "type": "number", "description": "Session duration (30, 45, 60, 90)" },
+        "price": { "type": "number", "description": "Price in USD" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "declined", "completed", "cancelled"],
+          "description": "Lifecycle state of the booking"
+        },
+        "meetingLink": { "type": "string", "description": "External meeting URL (Google Meet or Zoom)", "format": "uri" },
+        "createdAt": { "type": "string", "description": "Booking creation timestamp" }
+      },
+      "required": ["id", "tuteeUid", "tutorUid", "subject", "date", "time", "durationMins", "price", "status"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "Feedback and star rating left by a student for a tutor",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Review unique ID" },
+        "bookingId": { "type": "string", "description": "Associated booking" },
+        "tutorUid": { "type": "string", "description": "Tutor who received the review" },
+        "tuteeUid": { "type": "string", "description": "Author student UID" },
+        "tuteeName": { "type": "string", "description": "Author student display name" },
+        "stars": { "type": "number", "description": "1 to 5 star rating" },
+        "text": { "type": "string", "description": "Review comment", "maxLength": 1000 },
+        "createdAt": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["id", "tutorUid", "tuteeUid", "stars", "text"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Report on an unfair review or bad actor",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Report unique ID" },
+        "reviewId": { "type": "string", "description": "ID of flagged review" },
+        "reportedBy": { "type": "string", "description": "UID of the user filing the report" },
+        "reason": { "type": "string", "description": "Explanation for reporting", "maxLength": 500 },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["id", "reviewId", "reportedBy", "reason"]
+    },
+    "SavedTutor": {
+      "title": "SavedTutor",
+      "description": "Bookmarks of favorite tutors by a tutee",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Bookmark ID (tuteeUid_tutorUid)" },
+        "tuteeUid": { "type": "string", "description": "UID of the bookmarking tutee" },
+        "tutorUid": { "type": "string", "description": "UID of bookmarked tutor" }
+      },
+      "required": ["id", "tuteeUid", "tutorUid"]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "In-app notifications for session requests and tutor acceptances",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique notification ID" },
+        "recipientUid": { "type": "string", "description": "Target recipient UID" },
+        "senderUid": { "type": "string", "description": "Sender UID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "recipientRole": { "type": "string", "enum": ["tutee", "tutor", "parent"], "description": "Persona context" },
+        "type": { "type": "string", "enum": ["session_request", "session_accepted", "session_declined", "system"], "description": "Notification category" },
+        "title": { "type": "string", "description": "Notification title text", "maxLength": 100 },
+        "message": { "type": "string", "description": "Notification descriptive body", "maxLength": 500 },
+        "bookingId": { "type": "string", "description": "Associated booking ID" },
+        "subject": { "type": "string", "description": "Session topic or subject" },
+        "meetingLink": { "type": "string", "description": "Optional meeting link" },
+        "read": { "type": "boolean", "description": "Read status" },
+        "createdAt": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["id", "recipientUid", "senderUid", "type", "title", "message", "read", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User account documents for tutees, tutors, and parents"
+    },
+    "/tutorProfiles/{tutorId}": {
+      "schema": { "$ref": "#/entities/TutorProfile" },
+      "description": "Public searchable tutor profiles"
+    },
+    "/availability/{slotId}": {
+      "schema": { "$ref": "#/entities/AvailabilitySlot" },
+      "description": "Tutor weekly time windows"
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Tutoring session requests and bookings"
+    },
+    "/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Ratings and reviews left for tutors"
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Dispute and unfair review reports"
+    },
+    "/savedTutors/{savedId}": {
+      "schema": { "$ref": "#/entities/SavedTutor" },
+      "description": "Tutee saved/favorite tutors collection"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "Session request and acceptance notifications"
+    }
+  }
+}
