@@ -6,12 +6,13 @@
  */
 import { TutorProfile, User } from '../types';
 import { ANIME_AVATARS, getAnimeAvatar } from '../utils/avatars';
-import { isFirebaseConfigured, db } from './firebase';
+import { auth, isFirebaseConfigured, db } from './firebase';
 import { collection, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
 
 export const STORAGE_KEY_CUSTOM_TUTORS = 'tutorlink_custom_tutors';
 const STORAGE_KEY_USERS_DB = 'tutorlink_users_db';
 const STORAGE_KEY_AUTH_USER = 'tutorlink_current_user';
+const isDemoUid = (uid: string) => /^(user|tutor|parent)_/.test(uid);
 
 export const SAMPLE_TUTORS: TutorProfile[] = [
   {
@@ -147,7 +148,7 @@ export async function upsertTutorProfile(
   saveStoredCustomTutors(customMap);
 
   // Sync with Firestore if configured
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && auth?.currentUser?.uid === profileData.uid) {
     try {
       await setDoc(doc(db, 'tutors', profileData.uid), fullProfile, { merge: true });
     } catch (err) {
@@ -221,19 +222,24 @@ function syncRegisteredTutorsFromUsersDb(): void {
  * Fetch all available tutors, merging custom/registered tutors and sample profiles
  */
 export async function getTutors(): Promise<TutorProfile[]> {
+  const isFirebaseUser = Boolean(auth?.currentUser);
   // 1. Ensure any registered tutor in the app is synced into the custom directory
   syncRegisteredTutorsFromUsersDb();
 
   const customMap = getStoredCustomTutors();
+  let firestoreProfiles: TutorProfile[] | null = null;
 
   // 2. Fetch from Firestore if configured (check tutorProfiles collection)
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && isFirebaseUser) {
     try {
       const snap = await getDocs(collection(db, 'tutorProfiles'));
+      const fetchedProfiles: TutorProfile[] = [];
+      firestoreProfiles = fetchedProfiles;
       snap.forEach((docSnap) => {
         const data = docSnap.data() as TutorProfile;
         if (data.uid) {
           customMap[data.uid] = data;
+          fetchedProfiles.push(data);
         }
       });
       saveStoredCustomTutors(customMap);
@@ -260,16 +266,20 @@ export async function getTutors(): Promise<TutorProfile[]> {
   const merged: TutorProfile[] = [];
   const existingUids = new Set<string>();
 
-  for (const t of Object.values(customMap)) {
+  for (const t of firestoreProfiles ?? Object.values(customMap)) {
     // If hidden or user disabled their tutor role, don't show in search
-    if ((t as any).hidden || disabledTutorUids.has(t.uid)) {
+    if (
+      (t as any).hidden ||
+      (!firestoreProfiles && disabledTutorUids.has(t.uid)) ||
+      (isFirebaseUser && (isDemoUid(t.uid) || SAMPLE_TUTORS.some((sample) => sample.uid === t.uid)))
+    ) {
       continue;
     }
     merged.push(t);
     existingUids.add(t.uid);
   }
 
-  for (const sample of SAMPLE_TUTORS) {
+  for (const sample of isFirebaseUser ? [] : SAMPLE_TUTORS) {
     if (!existingUids.has(sample.uid) && !disabledTutorUids.has(sample.uid)) {
       merged.push(sample);
       existingUids.add(sample.uid);

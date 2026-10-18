@@ -25,6 +25,10 @@ const STORAGE_KEY_AUTH_USER = 'tutorlink_current_user';
 const STORAGE_KEY_USERS_DB = 'tutorlink_users_db';
 const STORAGE_KEY_CUSTOM_TUTORS = 'tutorlink_custom_tutors';
 
+function isDemoUid(uid: string): boolean {
+  return /^(user|tutor|parent)_/.test(uid);
+}
+
 function getLocalUsersDb(): Record<string, User> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_USERS_DB);
@@ -123,7 +127,12 @@ export function normalizeUser(raw: any): User {
  * Fetch user profile from Firestore or local storage
  */
 export async function getProfile(uid: string): Promise<User | null> {
-  if (isFirebaseConfigured && db) {
+  if (
+    isFirebaseConfigured &&
+    db &&
+    !isDemoUid(uid) &&
+    auth?.currentUser?.uid === uid
+  ) {
     try {
       const snap = await getDoc(doc(db, 'users', uid));
       if (snap.exists()) {
@@ -132,7 +141,7 @@ export async function getProfile(uid: string): Promise<User | null> {
         return normalized;
       }
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, `users/${uid}`);
+      console.warn(`Could not read Firestore profile users/${uid}; falling back to local profile data.`, err);
     }
   }
 
@@ -154,7 +163,7 @@ export async function getProfile(uid: string): Promise<User | null> {
  * Updates personal details with validation
  */
 export async function updateProfile(uid: string, data: Partial<User>): Promise<User> {
-  const current = (await getProfile(uid)) || getStoredUser();
+  const current = await getProfile(uid);
   if (!current) {
     throw new Error('User not found');
   }
@@ -183,11 +192,50 @@ export async function updateProfile(uid: string, data: Partial<User>): Promise<U
     role: current.activeRole,
   };
 
-  // Sync to local storage
-  const usersDb = getLocalUsersDb();
-  usersDb[uid] = updated;
-  saveLocalUsersDb(usersDb);
-  setStoredUser(updated);
+  const shouldSyncToFirebase = isFirebaseConfigured && !isDemoUid(uid);
+  if (shouldSyncToFirebase && !db) {
+    throw new Error('Firebase is configured but Firestore is unavailable. Check the app configuration and try again.');
+  }
+  if (shouldSyncToFirebase && auth?.currentUser?.uid !== uid) {
+    throw new Error('Your Firebase sign-in has expired or changed. Sign out and sign in again before updating your profile.');
+  }
+
+  if (shouldSyncToFirebase && db) {
+    try {
+      await setDoc(doc(db, 'users', uid), {
+        uid,
+        name: updated.name,
+        email: updated.email,
+        roles: updated.roles,
+        activeRole: updated.activeRole,
+        role: updated.activeRole,
+        avatarInitials: updated.avatarInitials,
+        createdAt: updated.createdAt,
+        bio: updated.bio || '',
+        phone: updated.phone || '',
+        university: updated.university || '',
+        degree: updated.degree || '',
+        yearOfStudy: updated.yearOfStudy || '',
+        ...(updated.avatarUrl ? { avatarUrl: updated.avatarUrl } : {}),
+        ...(updated.linkedChildUid ? { linkedChildUid: updated.linkedChildUid } : {}),
+        ...(updated.linkedChildName ? { linkedChildName: updated.linkedChildName } : {}),
+      }, { merge: true });
+    } catch (err) {
+      const code =
+        err !== null && typeof err === 'object' && 'code' in err &&
+        typeof err.code === 'string'
+          ? err.code
+          : '';
+      console.error(`Could not update Firestore profile users/${uid}.`, err);
+      if (code === 'permission-denied') {
+        throw new Error('Firebase denied the profile update. Check that the published Firestore rules allow the signed-in user to update their own users document.');
+      }
+      if (code === 'unavailable' || code === 'deadline-exceeded') {
+        throw new Error('Could not reach Firestore to save your profile. Check your internet connection and try again.');
+      }
+      throw new Error(err instanceof Error ? err.message : 'Could not save your profile to Firebase.');
+    }
+  }
 
   // If user has tutor role, sync tutor profile name and avatar
   if (updated.roles.includes('tutor')) {
@@ -202,34 +250,23 @@ export async function updateProfile(uid: string, data: Partial<User>): Promise<U
       saveStoredCustomTutors(customTutors);
     }
 
-    if (isFirebaseConfigured && db) {
+    if (shouldSyncToFirebase && db) {
       try {
         await updateDoc(doc(db, 'tutorProfiles', uid), {
           name: updated.name,
           avatarInitials: updated.avatarInitials,
         });
-      } catch {
-        // Ignored if tutorProfiles doc doesn't exist yet
+      } catch (err) {
+        console.warn(`Could not sync tutor profile details for tutorProfiles/${uid}.`, err);
       }
     }
   }
 
-  // Sync to Firestore
-  if (isFirebaseConfigured && db) {
-    try {
-      await updateDoc(doc(db, 'users', uid), {
-        name: updated.name,
-        avatarInitials: updated.avatarInitials,
-        bio: updated.bio || '',
-        phone: updated.phone || '',
-        university: updated.university || '',
-        degree: updated.degree || '',
-        yearOfStudy: updated.yearOfStudy || '',
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${uid}`);
-    }
-  }
+  // Save locally only after the cloud profile write has succeeded.
+  const usersDb = getLocalUsersDb();
+  usersDb[uid] = updated;
+  saveLocalUsersDb(usersDb);
+  setStoredUser(updated);
 
   return updated;
 }
@@ -524,30 +561,59 @@ export async function updateTutorProfileData(
 /**
  * Changes user password with reauthentication
  */
-export async function changeUserPassword(currentPassword: string, newPassword: string): Promise<void> {
+export async function changeUserPassword(
+  uid: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
   if (newPassword.length < 6) {
     throw new Error('New password must be at least 6 characters long.');
   }
 
-  if (isFirebaseConfigured && auth?.currentUser && auth.currentUser.email) {
-    try {
-      const credential = EmailAuthProvider.credential(auth.currentUser.email, currentPassword);
-      await reauthenticateWithCredential(auth.currentUser, credential);
-      await updatePassword(auth.currentUser, newPassword);
-      return;
-    } catch (err: any) {
-      if (err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential') {
-        throw new Error('Current password is incorrect.');
-      }
-      if (err?.code === 'auth/weak-password') {
-        throw new Error('New password is too weak. Please use at least 6 characters.');
-      }
-      throw new Error(err?.message || 'Password update failed.');
-    }
+  if (!isFirebaseConfigured || !auth) {
+    throw new Error('Password changes require a Firebase account. Demo accounts do not have a cloud password.');
   }
 
-  // Demo fallback
-  return;
+  const firebaseUser = auth.currentUser;
+  if (!firebaseUser || firebaseUser.uid !== uid) {
+    throw new Error('Your Firebase sign-in has expired. Sign out and sign in again before changing your password.');
+  }
+
+  if (!firebaseUser.email || !firebaseUser.providerData.some((provider) => provider.providerId === 'password')) {
+    throw new Error('This account does not use an email-and-password sign-in, so its password cannot be changed here.');
+  }
+
+  try {
+    const credential = EmailAuthProvider.credential(firebaseUser.email, currentPassword);
+    await reauthenticateWithCredential(firebaseUser, credential);
+    await updatePassword(firebaseUser, newPassword);
+  } catch (error) {
+    const code =
+      error !== null && typeof error === 'object' && 'code' in error &&
+      typeof error.code === 'string'
+        ? error.code
+        : '';
+
+    if (code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+      throw new Error('Current password is incorrect.');
+    }
+    if (code === 'auth/weak-password') {
+      throw new Error('New password is too weak. Please use at least 6 characters.');
+    }
+    if (code === 'auth/requires-recent-login') {
+      throw new Error('For security, sign out and sign in again, then retry changing your password.');
+    }
+    if (code === 'auth/network-request-failed') {
+      throw new Error('Could not reach Firebase. Check your internet connection and try again.');
+    }
+    if (code === 'auth/too-many-requests') {
+      throw new Error('Too many attempts. Wait a while before trying again.');
+    }
+    if (code === 'auth/operation-not-allowed') {
+      throw new Error('Email/password sign-in is disabled for this Firebase project.');
+    }
+    throw new Error(error instanceof Error ? error.message : 'Password update failed.');
+  }
 }
 
 /**

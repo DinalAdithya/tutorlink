@@ -341,6 +341,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   // Change password
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!user) return;
     if (newPassword.length < 6) {
       showFeedback('error', 'New password must be at least 6 characters');
       return;
@@ -352,7 +353,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
     setLoadingAction(true);
     try {
-      await changeUserPassword(currentPassword, newPassword);
+      await changeUserPassword(user.uid, currentPassword, newPassword);
       setShowChangePasswordModal(false);
       setCurrentPassword('');
       setNewPassword('');

@@ -6,13 +6,15 @@
 import { Booking, BookingStatus } from '../types';
 import { ANIME_AVATARS } from '../utils/avatars';
 import { isValidMeetingUrl } from './linking';
-import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from './firebase';
-import { doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import { auth, db, isFirebaseConfigured, handleFirestoreError, OperationType } from './firebase';
+import { collection, deleteDoc, doc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { sendNotification } from './notifications';
 
 export { isValidMeetingUrl };
 
 const STORAGE_KEY_BOOKINGS = 'tutorlink_bookings_db';
+const remoteBookingIds = new Set<string>();
+const isDemoUid = (uid: string) => /^(user|tutor|parent)_/.test(uid);
 
 export const INITIAL_BOOKINGS: Booking[] = [
   {
@@ -91,10 +93,26 @@ function saveStoredBookings(bookings: Booking[]) {
  */
 export async function getBookingsForUser(userUid: string, role: string): Promise<Booking[]> {
   const all = getStoredBookings();
+  if (isFirebaseConfigured && db && auth?.currentUser?.uid === userUid && role !== 'parent') {
+    try {
+      const field = role === 'tutor' ? 'tutorUid' : 'tuteeUid';
+      const snap = await getDocs(query(collection(db, 'bookings'), where(field, '==', userUid)));
+      const remoteBookings = snap.docs.map((bookingDoc) => ({
+        ...bookingDoc.data(),
+        id: bookingDoc.id,
+      } as Booking));
+      remoteBookings.forEach((booking) => remoteBookingIds.add(booking.id));
+      return remoteBookings;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.LIST, `bookings (${role}: ${userUid})`);
+    }
+  }
+
+  if (role === 'parent') return all;
   if (role === 'tutor') {
     return all.filter((b) => b.tutorUid === userUid || b.tutorUid === 'tutor_kavindu');
   }
-  return all;
+  return all.filter((booking) => booking.tuteeUid === userUid || userUid === 'user_senuri');
 }
 
 /**
@@ -124,7 +142,7 @@ export async function createBooking(payload: {
     tuteeName: payload.tuteeName,
     tutorUid: payload.tutorUid,
     tutorName: payload.tutorName,
-    tutorAvatar: payload.tutorAvatar,
+    ...(payload.tutorAvatar !== undefined ? { tutorAvatar: payload.tutorAvatar } : {}),
     subject: payload.subject,
     notes: payload.notes || 'Peer tutoring session',
     date: payload.date || 'Tomorrow',
@@ -135,17 +153,38 @@ export async function createBooking(payload: {
     createdAt: new Date().toISOString(),
   };
 
-  const bookings = getStoredBookings();
-  bookings.unshift(newBooking);
-  saveStoredBookings(bookings);
+  const isDemoBooking = isDemoUid(payload.tuteeUid) || isDemoUid(payload.tutorUid);
+  const firebaseUid = auth?.currentUser?.uid;
+  const shouldSyncToFirebase = isFirebaseConfigured && db && !isDemoBooking;
+  if (shouldSyncToFirebase && firebaseUid !== payload.tuteeUid) {
+    throw new Error('Your Firebase sign-in is no longer active for this account. Sign out and sign in again, then retry.');
+  }
 
-  if (isFirebaseConfigured && db) {
+  if (shouldSyncToFirebase) {
+    const firestore = db;
+    if (!firestore) throw new Error('Firestore is not available. Check your connection and try again.');
     try {
-      await setDoc(doc(db, 'bookings', newBooking.id), newBooking);
+      await setDoc(doc(firestore, 'bookings', newBooking.id), newBooking);
+      remoteBookingIds.add(newBooking.id);
     } catch (err) {
+      const code =
+        err !== null && typeof err === 'object' && 'code' in err &&
+        typeof err.code === 'string'
+          ? err.code
+          : '';
+      if (code === 'permission-denied') {
+        throw new Error('Firestore rules rejected the session request. Confirm the published rules allow the signed-in student to create bookings.');
+      }
+      if (code === 'unavailable' || code === 'network-request-failed') {
+        throw new Error('Could not reach Firestore, so the session request was not sent. Check your connection and try again.');
+      }
       handleFirestoreError(err, OperationType.WRITE, `bookings/${newBooking.id}`);
     }
   }
+
+  const bookings = getStoredBookings();
+  bookings.unshift(newBooking);
+  saveStoredBookings(bookings);
 
   // Notify the tutor about the incoming session request
   try {
@@ -198,7 +237,7 @@ export async function acceptBooking(
   saveStoredBookings(bookings);
 
   // Sync to Firestore if live Firebase is active
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && remoteBookingIds.has(bookingId)) {
     try {
       await updateDoc(doc(db, 'bookings', bookingId), {
         status: 'accepted',
@@ -248,7 +287,7 @@ export async function declineBooking(bookingId: string): Promise<Booking> {
   bookings[targetIndex] = updated;
   saveStoredBookings(bookings);
 
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && remoteBookingIds.has(bookingId)) {
     try {
       await updateDoc(doc(db, 'bookings', bookingId), { status: 'declined' });
     } catch (err) {
@@ -257,6 +296,40 @@ export async function declineBooking(bookingId: string): Promise<Booking> {
   }
 
   return updated;
+}
+
+/**
+ * Cancel a student's pending request by deleting it from local and remote storage.
+ */
+export async function cancelBooking(bookingId: string, tuteeUid: string): Promise<void> {
+  const bookings = getStoredBookings();
+  const targetIndex = bookings.findIndex((booking) => booking.id === bookingId);
+  if (targetIndex === -1) {
+    throw new Error(`Booking with ID ${bookingId} not found`);
+  }
+
+  const booking = bookings[targetIndex];
+  if (booking.tuteeUid !== tuteeUid) {
+    throw new Error('You can only cancel your own session requests.');
+  }
+  if (booking.status !== 'pending') {
+    throw new Error('Only pending session requests can be cancelled.');
+  }
+
+  if (isFirebaseConfigured && db && remoteBookingIds.has(bookingId)) {
+    if (auth?.currentUser?.uid !== tuteeUid) {
+      throw new Error('Your Firebase sign-in is no longer active for this account. Sign out and sign in again, then retry.');
+    }
+    try {
+      await deleteDoc(doc(db, 'bookings', bookingId));
+      remoteBookingIds.delete(bookingId);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `bookings/${bookingId}`);
+    }
+  }
+
+  bookings.splice(targetIndex, 1);
+  saveStoredBookings(bookings);
 }
 
 /**
@@ -287,7 +360,7 @@ export async function updateMeetingLink(
   bookings[targetIndex] = updated;
   saveStoredBookings(bookings);
 
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && remoteBookingIds.has(bookingId)) {
     try {
       await updateDoc(doc(db, 'bookings', bookingId), {
         meetingLink: cleanLink ? cleanLink : null,

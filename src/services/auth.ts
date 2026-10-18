@@ -23,6 +23,44 @@ import { normalizeUser } from './profile';
 const STORAGE_KEY_AUTH_USER = 'tutorlink_current_user';
 const STORAGE_KEY_USERS_DB = 'tutorlink_users_db';
 const STORAGE_KEY_CUSTOM_TUTORS = 'tutorlink_custom_tutors';
+let authNotice: string | null = null;
+
+export function takeAuthNotice(): string | null {
+  const notice = authNotice;
+  authNotice = null;
+  return notice;
+}
+
+function isDemoAlias(email: string): boolean {
+  return [
+    'kavindu',
+    'tutor',
+    'tutor@tutorlink.lk',
+    'malani',
+    'parent',
+    'parent@tutorlink.lk',
+    'senuri',
+    'student',
+    'tutee',
+    'student@tutorlink.lk',
+  ].includes(email.toLowerCase().trim());
+}
+
+function isDemoUid(uid: string): boolean {
+  return /^(user|tutor|parent)_/.test(uid);
+}
+
+function reportFirestoreFallback(operation: string, error: unknown): void {
+  console.warn(`Firebase ${operation} failed; continuing with the authenticated local profile.`, error);
+  authNotice = 'You signed in, but Firestore denied access to your profile. The app can continue locally; configure Firestore security rules to enable cloud profile sync.';
+}
+
+function persistLocalUser(user: User): void {
+  const usersDb = getLocalUsersDb();
+  usersDb[user.uid] = user;
+  saveLocalUsersDb(usersDb);
+  setStoredUser(user);
+}
 
 /**
  * Pre-configured Sinhala demo user accounts with full profile details
@@ -184,6 +222,7 @@ export async function registerUser(
   name: string,
   startingRole: UserRole
 ): Promise<User> {
+  authNotice = null;
   const initials = generateInitials(name);
   const now = new Date().toISOString();
 
@@ -207,7 +246,7 @@ export async function registerUser(
       try {
         await setDoc(doc(db, 'users', fbUser.uid), newUser);
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${fbUser.uid}`);
+        reportFirestoreFallback(`profile creation for users/${fbUser.uid}`, err);
       }
 
       // If registered with tutor role, create initial tutorProfiles doc with verified = false
@@ -231,11 +270,11 @@ export async function registerUser(
         try {
           await setDoc(doc(db, 'tutorProfiles', fbUser.uid), tutorProfile);
         } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `tutorProfiles/${fbUser.uid}`);
+          reportFirestoreFallback(`tutor profile creation for tutorProfiles/${fbUser.uid}`, err);
         }
       }
 
-      setStoredUser(newUser);
+      persistLocalUser(newUser);
       return newUser;
     } catch (err) {
       console.error('Firebase registration error:', err);
@@ -287,8 +326,9 @@ export async function loginUser(
   preferredRole?: UserRole
 ): Promise<User> {
   const targetRole = inferRole(email, preferredRole);
+  authNotice = null;
 
-  if (isFirebaseConfigured && auth && db) {
+  if (isFirebaseConfigured && auth && db && !isDemoAlias(email)) {
     try {
       const userCredential = await signInWithEmailAndPassword(auth, email, pass);
       const fbUser = userCredential.user;
@@ -302,34 +342,50 @@ export async function loginUser(
           if (preferredRole && userProfile.roles.includes(preferredRole) && userProfile.activeRole !== preferredRole) {
             userProfile.activeRole = preferredRole;
             userProfile.role = preferredRole;
-            await updateDoc(doc(db, 'users', fbUser.uid), { activeRole: preferredRole });
+            try {
+              await updateDoc(doc(db, 'users', fbUser.uid), { activeRole: preferredRole });
+            } catch (err) {
+              reportFirestoreFallback(`role update for users/${fbUser.uid}`, err);
+            }
           }
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, `users/${fbUser.uid}`);
+        reportFirestoreFallback(`profile read for users/${fbUser.uid}`, err);
       }
 
       if (!userProfile) {
-        // Fallback user profile if Firestore doc was missing
-        userProfile = {
-          uid: fbUser.uid,
-          name: fbUser.displayName || email.split('@')[0],
-          email,
-          roles: [targetRole],
-          activeRole: targetRole,
-          role: targetRole,
-          avatarInitials: generateInitials(fbUser.displayName || email.split('@')[0]),
-          createdAt: new Date().toISOString(),
-        };
-        await setDoc(doc(db, 'users', fbUser.uid), userProfile);
+        const localUser = getLocalUsersDb()[fbUser.uid];
+        const displayName = fbUser.displayName || email.split('@')[0];
+        userProfile = localUser
+          ? normalizeUser(localUser)
+          : {
+              uid: fbUser.uid,
+              name: displayName,
+              email: fbUser.email || email,
+              roles: [targetRole],
+              activeRole: targetRole,
+              role: targetRole,
+              avatarInitials: generateInitials(displayName),
+              createdAt: new Date().toISOString(),
+            };
+
+        try {
+          await setDoc(doc(db, 'users', fbUser.uid), userProfile, { merge: true });
+        } catch (err) {
+          reportFirestoreFallback(`profile initialization for users/${fbUser.uid}`, err);
+        }
       }
 
-      setStoredUser(userProfile);
+      persistLocalUser(userProfile);
       return userProfile;
     } catch (err) {
       console.error('Firebase sign-in error:', err);
       throw err;
     }
+  }
+
+  if (isDemoAlias(email) && auth?.currentUser) {
+    await signOut(auth);
   }
 
   // Demo Fallback Mode
@@ -427,7 +483,7 @@ export async function switchUserRole(uid: string, newRole: UserRole): Promise<Us
     role: newRole,
   };
 
-  setStoredUser(updated);
+  persistLocalUser(updated);
 
   const usersDb = getLocalUsersDb();
   if (usersDb[uid]) {
@@ -443,7 +499,7 @@ export async function switchUserRole(uid: string, newRole: UserRole): Promise<Us
         role: newRole,
       });
     } catch (err) {
-      console.warn('Could not sync role to Firestore:', err);
+      reportFirestoreFallback(`role update for users/${uid}`, err);
     }
   }
 
@@ -458,25 +514,62 @@ export function subscribeToAuth(callback: (user: User | null) => void): () => vo
   callback(getStoredUser());
 
   if (isFirebaseConfigured && auth && db) {
+    const currentAuth = auth;
     const currentDb = db;
+    let authRevision = 0;
     const unsub = onAuthStateChanged(auth, async (fbUser: FirebaseUser | null) => {
+      const revision = ++authRevision;
+      const storedUser = getStoredUser();
+
       if (!fbUser) {
+        if (storedUser && !isDemoUid(storedUser.uid)) {
+          setStoredUser(null);
+        }
+        callback(storedUser && isDemoUid(storedUser.uid) ? storedUser : null);
+        return;
+      }
+
+      if (storedUser?.uid !== fbUser.uid) {
         setStoredUser(null);
         callback(null);
-      } else {
-        try {
-          const snap = await getDoc(doc(currentDb, 'users', fbUser.uid));
-          if (snap.exists()) {
-            const user = normalizeUser(snap.data());
-            setStoredUser(user);
-            callback(user);
-          }
-        } catch {
-          // Keep existing local user
+      }
+
+      try {
+        const snap = await getDoc(doc(currentDb, 'users', fbUser.uid));
+        if (revision !== authRevision || currentAuth.currentUser?.uid !== fbUser.uid) return;
+
+        if (snap.exists()) {
+          const user = normalizeUser(snap.data());
+          setStoredUser(user);
+          callback(user);
+          return;
+        }
+
+        const localUser = getLocalUsersDb()[fbUser.uid];
+        if (localUser) {
+          setStoredUser(localUser);
+          callback(localUser);
+        } else {
+          setStoredUser(null);
+          callback(null);
+        }
+      } catch (error) {
+        if (revision !== authRevision || currentAuth.currentUser?.uid !== fbUser.uid) return;
+        console.warn(`Could not refresh Firestore profile users/${fbUser.uid}; using matching local data when available.`, error);
+        const localUser = getLocalUsersDb()[fbUser.uid];
+        if (localUser) {
+          setStoredUser(localUser);
+          callback(localUser);
+        } else {
+          setStoredUser(null);
+          callback(null);
         }
       }
     });
-    return unsub;
+    return () => {
+      authRevision += 1;
+      unsub();
+    };
   }
 
   return () => {};

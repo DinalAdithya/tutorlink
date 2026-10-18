@@ -293,6 +293,24 @@ export const ANIME_AVATARS = {
   tharindu: svgToBase64Uri(CHAMOD_SVG),
 };
 
+export const ANIME_AVATAR_SVGS: Record<string, string> = {
+  kavindu: KAVINDU_SVG,
+  thisal: THISAL_SVG,
+  sanduni: SANDUNI_SVG,
+  dinuka: DINUKA_SVG,
+  senuri: SENURI_SVG,
+  chamod: CHAMOD_SVG,
+  malani: MALANI_SVG,
+};
+
+export function getAnimeAvatarSvg(name: string): string | undefined {
+  const normalized = name.toLowerCase();
+  const key = Object.keys(ANIME_AVATAR_SVGS).find((avatarName) => normalized.includes(avatarName));
+  if (key) return ANIME_AVATAR_SVGS[key];
+  if (normalized.includes('tutor')) return ANIME_AVATAR_SVGS.kavindu;
+  return ANIME_AVATAR_SVGS.senuri;
+}
+
 export function getAnimeAvatar(name: string, fallbackSeed: string = 'tutorlink'): string {
   if (!name) return ANIME_AVATARS.senuri;
   const normalized = name.toLowerCase();

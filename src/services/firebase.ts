@@ -3,8 +3,10 @@
  * Compliant with Firebase Skill Guidelines
  */
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, Auth } from 'firebase/auth';
+import { Auth } from 'firebase/auth';
 import { getFirestore, Firestore, doc, getDocFromServer } from 'firebase/firestore';
+import { firebaseEnv } from './firebaseEnv';
+import { initializePlatformAuth } from './firebaseAuth';
 
 export enum OperationType {
   CREATE = 'create',
@@ -32,16 +34,13 @@ export interface FirestoreErrorInfo {
   };
 }
 
-// Read configuration supporting both Vite (web preview) and Expo environment variables
-const env = (typeof import.meta !== 'undefined' && (import.meta as any).env ? (import.meta as any).env : {}) as Record<string, string | undefined>;
-
 const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY || env.EXPO_PUBLIC_FIREBASE_API_KEY || '',
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || '',
-  projectId: env.VITE_FIREBASE_PROJECT_ID || env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || '',
-  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || '',
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
-  appId: env.VITE_FIREBASE_APP_ID || env.EXPO_PUBLIC_FIREBASE_APP_ID || '',
+  apiKey: firebaseEnv.apiKey,
+  authDomain: firebaseEnv.authDomain,
+  projectId: firebaseEnv.projectId,
+  storageBucket: firebaseEnv.storageBucket,
+  messagingSenderId: firebaseEnv.messagingSenderId,
+  appId: firebaseEnv.appId,
 };
 
 export const isFirebaseConfigured = Boolean(
@@ -57,7 +56,7 @@ let dbInstance: Firestore | null = null;
 if (isFirebaseConfigured) {
   try {
     appInstance = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    authInstance = getAuth(appInstance);
+    authInstance = initializePlatformAuth(appInstance);
     dbInstance = getFirestore(appInstance);
   } catch (err) {
     console.warn('Firebase initialization error, running in demo fallback mode:', err);

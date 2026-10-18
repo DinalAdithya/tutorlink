@@ -4,7 +4,7 @@
  * Used for alerting tutors on new session requests and alerting students on tutor acceptance.
  */
 import { AppNotification, NotificationType } from '../types';
-import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from './firebase';
+import { auth, db, isFirebaseConfigured, handleFirestoreError, OperationType } from './firebase';
 import {
   collection,
   doc,
@@ -90,13 +90,13 @@ export async function sendNotification(payload: {
     recipientUid: payload.recipientUid,
     senderUid: payload.senderUid,
     senderName: payload.senderName,
-    recipientRole: payload.recipientRole,
+    ...(payload.recipientRole !== undefined ? { recipientRole: payload.recipientRole } : {}),
     type: payload.type,
     title: payload.title,
     message: payload.message,
-    bookingId: payload.bookingId,
-    subject: payload.subject,
-    meetingLink: payload.meetingLink,
+    ...(payload.bookingId !== undefined ? { bookingId: payload.bookingId } : {}),
+    ...(payload.subject !== undefined ? { subject: payload.subject } : {}),
+    ...(payload.meetingLink !== undefined ? { meetingLink: payload.meetingLink } : {}),
     read: false,
     createdAt: new Date().toISOString(),
   };
@@ -107,7 +107,7 @@ export async function sendNotification(payload: {
   saveStoredNotifications(all);
 
   // Firestore sync if live
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && auth?.currentUser?.uid === payload.senderUid) {
     try {
       await setDoc(doc(db, 'notifications', notif.id), notif);
     } catch (err) {
@@ -134,20 +134,11 @@ export async function getNotificationsForUser(userUid: string): Promise<AppNotif
       (userUid === 'user_senuri' && n.recipientRole === 'tutee')
   );
 
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && auth?.currentUser?.uid === userUid) {
     try {
       const q = query(collection(db, 'notifications'), where('recipientUid', '==', userUid));
       const snap = await getDocs(q);
-      const remoteList = snap.docs.map((d) => d.data() as AppNotification);
-      if (remoteList.length > 0) {
-        // Merge with local deduplicated
-        const mergedMap = new Map<string, AppNotification>();
-        remoteList.forEach((n) => mergedMap.set(n.id, n));
-        localForUser.forEach((n) => {
-          if (!mergedMap.has(n.id)) mergedMap.set(n.id, n);
-        });
-        localForUser = Array.from(mergedMap.values());
-      }
+      localForUser = snap.docs.map((d) => d.data() as AppNotification);
     } catch (err) {
       // Non-blocking fallback to local
       console.warn('Could not fetch notifications from Firestore:', err);
@@ -170,7 +161,8 @@ export async function markNotificationAsRead(notifId: string): Promise<void> {
     saveStoredNotifications(all);
   }
 
-  if (isFirebaseConfigured && db) {
+  const notification = idx >= 0 ? all[idx] : null;
+  if (isFirebaseConfigured && db && notification && auth?.currentUser?.uid === notification.recipientUid) {
     try {
       await updateDoc(doc(db, 'notifications', notifId), { read: true });
     } catch (err) {
@@ -199,7 +191,7 @@ export async function markAllNotificationsAsRead(userUid: string): Promise<void>
     saveStoredNotifications(all);
   }
 
-  if (isFirebaseConfigured && db) {
+  if (isFirebaseConfigured && db && auth?.currentUser?.uid === userUid) {
     try {
       const q = query(
         collection(db, 'notifications'),

@@ -6,11 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#4F46E5"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -31,7 +26,18 @@
         "POST_NOTIFICATIONS"
       ]
     },
-    "plugins": [],
+    "plugins": [
+      "expo-asset",
+      "expo-sqlite",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#4F46E5"
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "77a308cd-8356-477f-ae0d-3b4bb75b7349"

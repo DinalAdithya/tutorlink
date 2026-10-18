@@ -79,10 +79,9 @@ service cloud.firestore {
         resource.data.tuteeUid == request.auth.uid ||
         resource.data.tutorUid == request.auth.uid
       );
-      allow delete: if isSignedIn() && (
-        resource.data.tuteeUid == request.auth.uid ||
-        resource.data.tutorUid == request.auth.uid
-      );
+      allow delete: if isSignedIn()
+        && resource.data.tuteeUid == request.auth.uid
+        && resource.data.status == 'pending';
     }
 
     // 4. Availability slots

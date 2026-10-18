@@ -27,7 +27,7 @@ import { TutorProfile } from '../../components/TutorProfile';
 import { SAMPLE_TUTORS, getTutors } from '../../services/tutors';
 import { EditTutorProfileModal } from '../../components/EditTutorProfileModal';
 import { TutorProfile as ITutorProfile, Booking } from '../../types';
-import { getBookingsForUser, createBooking } from '../../services/bookings';
+import { cancelBooking, getBookingsForUser, createBooking } from '../../services/bookings';
 import { openExternalMeetingLink, copyToClipboard } from '../../services/linking';
 
 export const TuteeSessionDetailModal: React.FC<{
@@ -644,6 +644,19 @@ export const TuteeSessionsScreen: React.FC = () => {
     });
   };
 
+  const handleCancelRequest = async (booking: Booking) => {
+    if (!user?.uid) return;
+    if (!window.confirm(`Cancel your pending request to ${booking.tutorName}?`)) return;
+    try {
+      await cancelBooking(booking.id, user.uid);
+      await fetchBookings();
+      setFeedback({ msg: 'Session request cancelled.' });
+      setTimeout(() => setFeedback(null), 3500);
+    } catch (err) {
+      setFeedback({ msg: err instanceof Error ? err.message : 'Could not cancel request.', isError: true });
+    }
+  };
+
   const filteredBookings = bookings.filter((b) => {
     if (filter === 'all') return true;
     return b.status === filter;
@@ -752,9 +765,17 @@ export const TuteeSessionsScreen: React.FC = () => {
                   )}
                 </div>
               ) : b.status === 'pending' ? (
-                <div className="pt-1 text-[11px] text-amber-700 font-medium flex items-center gap-1">
-                  <Clock className="w-3.5 h-3.5" />
-                  <span>Awaiting tutor response</span>
+                <div className="pt-1 flex items-center justify-between gap-2">
+                  <div className="text-[11px] text-amber-700 font-medium flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Awaiting tutor response</span>
+                  </div>
+                  <button
+                    onClick={() => void handleCancelRequest(b)}
+                    className="px-3 py-1.5 rounded-xl border border-rose-200 text-rose-700 text-xs font-bold hover:bg-rose-50 transition cursor-pointer"
+                  >
+                    Cancel request
+                  </button>
                 </div>
               ) : null}
             </div>
